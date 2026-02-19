@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OSM + OSRM Directions (No API Key)</title>
+
+  <!-- Leaflet (map) -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+
+  <style>
+    html, body { height: 100%; margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    #app { height: 100%; display: grid; grid-template-rows: auto 1fr; }
+    header { padding: 10px 12px; border-bottom: 1px solid #e5e7eb; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    #map { height: 100%; }
+    .pill { padding: 6px 10px; border: 1px solid #e5e7eb; border-radius: 999px; background: #f9fafb; font-size: 14px; }
+    button { padding: 7px 10px; border: 1px solid #d1d5db; background: white; border-radius: 8px; cursor: pointer; }
+    button:hover { background: #f3f4f6; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <span class="pill">Click map: 1st click = <b>Start</b>, 2nd click = <b>End</b></span>
+      <span class="pill">Start: <span id="startTxt" class="mono">—</span></span>
+      <span class="pill">End: <span id="endTxt" class="mono">—</span></span>
+      <span class="pill">Distance: <span id="distTxt">—</span></span>
+      <span class="pill">Time: <span id="timeTxt">—</span></span>
+      <button id="resetBtn">Reset</button>
+    </header>
+
+    <div id="map"></div>
+  </div>
+
+  <script>
+    // --- Map setup (USA-ish view) ---
+    const map = L.map("map").setView([39.5, -98.35], 4);
+
+    // OpenStreetMap tiles (no API key). Respect usage policy for production traffic.
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    }).addTo(map);
+
+    // --- State ---
+    let start = null; // {lat, lng}
+    let end = null;   // {lat, lng}
+    let startMarker = null;
+    let endMarker = null;
+    let routeLine = null;
+
+    const startTxt = document.getElementById("startTxt");
+    const endTxt = document.getElementById("endTxt");
+    const distTxt = document.getElementById("distTxt");
+    const timeTxt = document.getElementById("timeTxt");
+    const resetBtn = document.getElementById("resetBtn");
+
+    function fmtLL(p) {
+      return `${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}`;
+    }
+    function reset() {
+      start = end = null;
+      startTxt.textContent = endTxt.textContent = "—";
+      distTxt.textContent = timeTxt.textContent = "—";
+      if (startMarker) { map.removeLayer(startMarker); startMarker = null; }
+      if (endMarker) { map.removeLayer(endMarker); endMarker = null; }
+      if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+    }
+    resetBtn.addEventListener("click", reset);
+
+    map.on("click", async (e) => {
+      const p = { lat: e.latlng.lat, lng: e.latlng.lng };
+
+      if (!start) {
+        start = p;
+        startTxt.textContent = fmtLL(start);
+        startMarker = L.marker([start.lat, start.lng], { title: "Start" }).addTo(map);
+        return;
+      }
+      if (!end) {
+        end = p;
+        endTxt.textContent = fmtLL(end);
+        endMarker = L.marker([end.lat, end.lng], { title: "End" }).addTo(map);
+        await route(start, end);
+        return;
+      }
+
+      // If both already set, start over with new start
+      reset();
+      start = p;
+      startTxt.textContent = fmtLL(start);
+      startMarker = L.marker([start.lat, start.lng], { title: "Start" }).addTo(map);
+    });
+
+    async function route(a, b) {
+      // OSRM wants lon,lat (NOT lat,lon)
+      const url =
+        `https://router.project-osrm.org/route/v1/driving/` +
+        `${a.lng},${a.lat};${b.lng},${b.lat}` +
+        `?overview=full&geometries=geojson`;
+
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        if (!data.routes || !data.routes.length) throw new Error("No route found.");
+
+        const r = data.routes[0];
+        const coords = r.geometry.coordinates.map(([lng, lat]) => [lat, lng]); // to Leaflet [lat,lng]
+
+        if (routeLine) map.removeLayer(routeLine);
+        routeLine = L.polyline(coords, { weight: 5 }).addTo(map);
+
+        // Fit view to route
+        map.fitBounds(routeLine.getBounds(), { padding: [20, 20] });
+
+        // Show stats
+        distTxt.textContent = (r.distance / 1000).toFixed(2) + " km";
+        timeTxt.textContent = Math.round(r.duration / 60) + " min";
+      } catch (err) {
+        console.error(err);
+        distTxt.textContent = "—";
+        timeTxt.textContent = "—";
+        alert("Routing failed (public demo servers can be rate-limited). Try again.");
+      }
+    }
+  </script>
+</body>
+</html>
